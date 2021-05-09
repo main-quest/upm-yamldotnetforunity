@@ -1,0 +1,13 @@
+{
+  "name": "com.thefallengames.yamldotnetforunity",
+  "version": "6.1.3",
+  "displayName": "YamlDotNetForUnity",
+  "unity": "2019.1",
+  "dependencies": {
+ },
+  "author": {
+    "name": "The Fallen Games",
+    "email": "contact@thefallengames.com",
+    "url": "https://thefallengames.com"
+  }
+}

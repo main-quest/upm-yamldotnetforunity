@@ -1,0 +1,10 @@
+/Temp
+/obj
+/Library
+/.vs
+*.apk
+/*.csproj
+/*.sln
+/Build
+*.log
+
