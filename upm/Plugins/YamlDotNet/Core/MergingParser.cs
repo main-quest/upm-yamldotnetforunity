@@ -1,23 +1,23 @@
-﻿//  This file is part of YamlDotNet - A .NET library for YAML.
-//  Copyright (c) Antoine Aubry and contributors
-
-//  Permission is hereby granted, free of charge, to any person obtaining a copy of
-//  this software and associated documentation files (the "Software"), to deal in
-//  the Software without restriction, including without limitation the rights to
-//  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-//  of the Software, and to permit persons to whom the Software is furnished to do
-//  so, subject to the following conditions:
-
-//  The above copyright notice and this permission notice shall be included in all
-//  copies or substantial portions of the Software.
-
-//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-//  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-//  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-//  SOFTWARE.
+﻿// This file is part of YamlDotNet - A .NET library for YAML.
+// Copyright (c) Antoine Aubry and contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of
+// this software and associated documentation files (the "Software"), to deal in
+// the Software without restriction, including without limitation the rights to
+// use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+// of the Software, and to permit persons to whom the Software is furnished to do
+// so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 using System;
 using System.Collections;
@@ -32,63 +32,88 @@ namespace YamlDotNet.Core
     /// </summary>
     public sealed class MergingParser : IParser
     {
-        private readonly ParsingEventCollection _events;
-        private readonly IParser _innerParser;
-        private IEnumerator<LinkedListNode<ParsingEvent>> _iterator;
-        private bool _merged;
+        private readonly ParsingEventCollection events;
+        private readonly IParser innerParser;
+        private IEnumerator<LinkedListNode<ParsingEvent>> iterator;
+        private bool merged;
 
         public MergingParser(IParser innerParser)
         {
-            _events = new ParsingEventCollection();
-            _merged = false;
-            _iterator = _events.GetEnumerator();
-            _innerParser = innerParser;
+            events = new ParsingEventCollection();
+            merged = false;
+            iterator = events.GetEnumerator();
+            this.innerParser = innerParser;
         }
 
-        public ParsingEvent Current => _iterator.Current?.Value;
+        public ParsingEvent? Current => iterator.Current?.Value;
 
         public bool MoveNext()
         {
-            if (!_merged)
+            if (!merged)
             {
                 Merge();
-                _events.CleanMarked();
-                _iterator = _events.GetEnumerator();
-                _merged = true;
+                events.CleanMarked();
+                iterator = events.GetEnumerator();
+                merged = true;
             }
 
-            return _iterator.MoveNext();
+            return iterator.MoveNext();
         }
 
         private void Merge()
         {
-            while (_innerParser.MoveNext())
+            while (innerParser.MoveNext())
             {
-                _events.Add(_innerParser.Current);
+                events.Add(innerParser.Current!);
             }
 
-            foreach (var node in _events)
+            foreach (var node in events)
             {
                 if (IsMergeToken(node))
                 {
-                    _events.MarkDeleted(node);
+                    events.MarkDeleted(node);
                     if (!HandleMerge(node.Next))
+                    {
                         throw new SemanticErrorException(node.Value.Start, node.Value.End, "Unrecognized merge key pattern");
+                    }
                 }
             }
         }
 
-        private bool HandleMerge(LinkedListNode<ParsingEvent> node)
+        private bool HandleMerge(LinkedListNode<ParsingEvent>? node)
         {
             if (node == null)
+            {
                 return false;
+            }
 
-            if (node.Value is AnchorAlias)
-                return HandleAnchorAlias(node);
+            if (node.Value is AnchorAlias anchorAlias)
+            {
+                return HandleAnchorAlias(node, node, anchorAlias);
+            }
 
             if (node.Value is SequenceStart)
+            {
                 return HandleSequence(node);
+            }
 
+            return false;
+        }
+
+        private bool HandleMergeSequence(LinkedListNode<ParsingEvent> sequenceStart, LinkedListNode<ParsingEvent>? node)
+        {
+            if (node is null)
+            {
+                return false;
+            }
+            if (node.Value is AnchorAlias anchorAlias)
+            {
+                return HandleAnchorAlias(sequenceStart, node, anchorAlias);
+            }
+            if (node.Value is SequenceStart)
+            {
+                return HandleSequence(node);
+            }
             return false;
         }
 
@@ -97,49 +122,44 @@ namespace YamlDotNet.Core
             return node.Value is Scalar merge && merge.Value == "<<";
         }
 
-        private bool HandleAnchorAlias(LinkedListNode<ParsingEvent> node)
+        private bool HandleAnchorAlias(LinkedListNode<ParsingEvent> node, LinkedListNode<ParsingEvent> anchorNode, AnchorAlias anchorAlias)
         {
-            if (node == null || !(node.Value is AnchorAlias))
-                return false;
-
-            var anchorAlias = (AnchorAlias)node.Value;
             var mergedEvents = GetMappingEvents(anchorAlias.Value);
 
-            _events.AddAfter(node, mergedEvents);
-            _events.MarkDeleted(node);
+            events.AddAfter(node, mergedEvents);
+            events.MarkDeleted(anchorNode);
 
             return true;
         }
 
         private bool HandleSequence(LinkedListNode<ParsingEvent> node)
         {
-            if (node == null || !(node.Value is SequenceStart))
-                return false;
+            var sequenceStart = node;
+            events.MarkDeleted(node);
 
-            _events.MarkDeleted(node);
-
-            while (node != null)
+            var current = node;
+            while (current != null)
             {
-                if (node.Value is SequenceEnd)
+                if (current.Value is SequenceEnd)
                 {
-                    _events.MarkDeleted(node);
+                    events.MarkDeleted(current);
                     return true;
                 }
 
-                var next = node.Next;
-                HandleMerge(next);
-                node = next;
+                var next = current.Next;
+                HandleMergeSequence(sequenceStart, next);
+                current = next;
             }
 
             return true;
         }
 
-        private IEnumerable<ParsingEvent> GetMappingEvents(string anchor)
+        private IEnumerable<ParsingEvent> GetMappingEvents(AnchorName anchor)
         {
             var cloner = new ParsingEventCloner();
             var nesting = 0;
 
-            return _events.FromAnchor(anchor)
+            return events.FromAnchor(anchor)
                 .Select(e => e.Value)
                 .TakeWhile(e => (nesting += e.NestingIncrease) >= 0)
                 .Select(e => cloner.Clone(e));
@@ -147,89 +167,88 @@ namespace YamlDotNet.Core
 
         private sealed class ParsingEventCollection : IEnumerable<LinkedListNode<ParsingEvent>>
         {
-            private readonly LinkedList<ParsingEvent> _events;
-            private readonly HashSet<LinkedListNode<ParsingEvent>> _deleted;
-            private readonly Dictionary<string, LinkedListNode<ParsingEvent>> _references;
+            private readonly LinkedList<ParsingEvent> events;
+            private readonly HashSet<LinkedListNode<ParsingEvent>> deleted;
+            private readonly Dictionary<AnchorName, LinkedListNode<ParsingEvent>> references;
 
             public ParsingEventCollection()
             {
-                _events = new LinkedList<ParsingEvent>();
-                _deleted = new HashSet<LinkedListNode<ParsingEvent>>();
-                _references = new Dictionary<string, LinkedListNode<ParsingEvent>>();
+                events = new LinkedList<ParsingEvent>();
+                deleted = new HashSet<LinkedListNode<ParsingEvent>>();
+                references = new Dictionary<AnchorName, LinkedListNode<ParsingEvent>>();
             }
 
             public void AddAfter(LinkedListNode<ParsingEvent> node, IEnumerable<ParsingEvent> items)
             {
                 foreach (var item in items)
                 {
-                    node = _events.AddAfter(node, item);
+                    node = events.AddAfter(node, item);
                 }
             }
 
             public void Add(ParsingEvent item)
             {
-                var node = _events.AddLast(item);
+                var node = events.AddLast(item);
                 AddReference(item, node);
             }
 
             public void MarkDeleted(LinkedListNode<ParsingEvent> node)
             {
-                _deleted.Add(node);
+                deleted.Add(node);
             }
 
             public void CleanMarked()
             {
-                foreach (var node in _deleted)
+                foreach (var node in deleted)
                 {
-                    _events.Remove(node);
+                    events.Remove(node);
                 }
             }
 
-            public IEnumerable<LinkedListNode<ParsingEvent>> FromAnchor(string anchor)
+            public IEnumerable<LinkedListNode<ParsingEvent>> FromAnchor(AnchorName anchor)
             {
-                var node = _references[anchor].Next;
-                var iterator = GetEnumerator(node);
-
-                while (iterator.MoveNext())
-                    yield return iterator.Current;
+                var node = references[anchor].Next;
+                return Enumerate(node);
             }
 
-            public IEnumerator<LinkedListNode<ParsingEvent>> GetEnumerator()
-            {
-                return GetEnumerator(_events.First);
-            }
+            public IEnumerator<LinkedListNode<ParsingEvent>> GetEnumerator() => Enumerate(events.First).GetEnumerator();
 
-            IEnumerator IEnumerable.GetEnumerator()
-            {
-                return GetEnumerator();
-            }
+            IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-            private IEnumerator<LinkedListNode<ParsingEvent>> GetEnumerator(LinkedListNode<ParsingEvent> node)
+            private IEnumerable<LinkedListNode<ParsingEvent>> Enumerate(LinkedListNode<ParsingEvent>? node)
             {
-                for (; node != null; node = node.Next)
+                while (node != null)
+                {
                     yield return node;
+                    node = node.Next;
+                }
             }
 
             private void AddReference(ParsingEvent item, LinkedListNode<ParsingEvent> node)
             {
-                if (!(item is MappingStart))
-                    return;
-
-                var mappingStart = (MappingStart)item;
-                var anchor = mappingStart.Anchor;
-
-                if (!string.IsNullOrEmpty(anchor))
-                    _references[anchor] = node;
+                if (item is MappingStart mappingStart)
+                {
+                    var anchor = mappingStart.Anchor;
+                    if (!anchor.IsEmpty)
+                    {
+                        references[anchor] = node;
+                    }
+                }
             }
         }
 
         private sealed class ParsingEventCloner : IParsingEventVisitor
         {
-            private ParsingEvent clonedEvent;
+            private ParsingEvent? clonedEvent;
 
             public ParsingEvent Clone(ParsingEvent e)
             {
                 e.Accept(this);
+                if (clonedEvent == null)
+                {
+                    throw new InvalidOperationException($"Could not clone event of type '{e.Type}'");
+                }
+
                 return clonedEvent;
             }
 
@@ -260,12 +279,12 @@ namespace YamlDotNet.Core
 
             void IParsingEventVisitor.Visit(Scalar e)
             {
-                clonedEvent = new Scalar(null, e.Tag, e.Value, e.Style, e.IsPlainImplicit, e.IsQuotedImplicit, e.Start, e.End);
+                clonedEvent = new Scalar(AnchorName.Empty, e.Tag, e.Value, e.Style, e.IsPlainImplicit, e.IsQuotedImplicit, e.Start, e.End);
             }
 
             void IParsingEventVisitor.Visit(SequenceStart e)
             {
-                clonedEvent = new SequenceStart(null, e.Tag, e.IsImplicit, e.Style, e.Start, e.End);
+                clonedEvent = new SequenceStart(AnchorName.Empty, e.Tag, e.IsImplicit, e.Style, e.Start, e.End);
             }
 
             void IParsingEventVisitor.Visit(SequenceEnd e)
@@ -275,7 +294,7 @@ namespace YamlDotNet.Core
 
             void IParsingEventVisitor.Visit(MappingStart e)
             {
-                clonedEvent = new MappingStart(null, e.Tag, e.IsImplicit, e.Style, e.Start, e.End);
+                clonedEvent = new MappingStart(AnchorName.Empty, e.Tag, e.IsImplicit, e.Style, e.Start, e.End);
             }
 
             void IParsingEventVisitor.Visit(MappingEnd e)

@@ -1,28 +1,29 @@
-﻿//  This file is part of YamlDotNet - A .NET library for YAML.
-//  Copyright (c) Antoine Aubry and contributors
-
-//  Permission is hereby granted, free of charge, to any person obtaining a copy of
-//  this software and associated documentation files (the "Software"), to deal in
-//  the Software without restriction, including without limitation the rights to
-//  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-//  of the Software, and to permit persons to whom the Software is furnished to do
-//  so, subject to the following conditions:
-
-//  The above copyright notice and this permission notice shall be included in all
-//  copies or substantial portions of the Software.
-
-//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-//  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-//  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-//  SOFTWARE.
+﻿// This file is part of YamlDotNet - A .NET library for YAML.
+// Copyright (c) Antoine Aubry and contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of
+// this software and associated documentation files (the "Software"), to deal in
+// the Software without restriction, including without limitation the rights to
+// use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+// of the Software, and to permit persons to whom the Software is furnished to do
+// so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 using System;
 using System.Collections.Generic;
-using System.Linq.Expressions;
+using YamlDotNet.Core;
 using YamlDotNet.Serialization.Converters;
+using YamlDotNet.Serialization.NamingConventions;
 using YamlDotNet.Serialization.TypeInspectors;
 
 namespace YamlDotNet.Serialization
@@ -33,39 +34,31 @@ namespace YamlDotNet.Serialization
     public abstract class BuilderSkeleton<TBuilder>
         where TBuilder : BuilderSkeleton<TBuilder>
     {
-        internal INamingConvention namingConvention;
+        internal INamingConvention namingConvention = NullNamingConvention.Instance;
         internal ITypeResolver typeResolver;
         internal readonly YamlAttributeOverrides overrides;
         internal readonly LazyComponentRegistrationList<Nothing, IYamlTypeConverter> typeConverterFactories;
         internal readonly LazyComponentRegistrationList<ITypeInspector, ITypeInspector> typeInspectorFactories;
-        private bool ignoreFields;
+        internal bool ignoreFields;
+        internal bool includeNonPublicProperties = false;
+        internal Settings settings;
 
-        internal BuilderSkeleton()
+        internal BuilderSkeleton(ITypeResolver typeResolver)
         {
             overrides = new YamlAttributeOverrides();
 
-            typeConverterFactories = new LazyComponentRegistrationList<Nothing, IYamlTypeConverter>();
-            typeConverterFactories.Add(typeof(GuidConverter), _ => new GuidConverter(false));
-            typeConverterFactories.Add(typeof(SystemTypeConverter), _ => new SystemTypeConverter());
+            typeConverterFactories = new LazyComponentRegistrationList<Nothing, IYamlTypeConverter>
+            {
+                { typeof(GuidConverter), _ => new GuidConverter(false) },
+                { typeof(SystemTypeConverter), _ => new SystemTypeConverter() }
+            };
 
             typeInspectorFactories = new LazyComponentRegistrationList<ITypeInspector, ITypeInspector>();
+            this.typeResolver = typeResolver ?? throw new ArgumentNullException(nameof(typeResolver));
+            settings = new Settings();
         }
 
         protected abstract TBuilder Self { get; }
-
-        internal ITypeInspector BuildTypeInspector()
-        {
-            ITypeInspector innerInspector = new ReadablePropertiesTypeInspector(typeResolver);
-            if (!ignoreFields)
-            {
-                innerInspector = new CompositeTypeInspector(
-                    new ReadableFieldsTypeInspector(typeResolver),
-                    innerInspector
-                );
-            }
-
-            return typeInspectorFactories.BuildComponentChain(innerInspector);
-        }
 
         /// <summary>
         /// Prevents serialization and deserialization of fields.
@@ -78,16 +71,29 @@ namespace YamlDotNet.Serialization
         }
 
         /// <summary>
+        /// Allows serialization and deserialization of non-public properties.
+        /// </summary>
+        public TBuilder IncludeNonPublicProperties()
+        {
+            includeNonPublicProperties = true;
+            return Self;
+        }
+
+        /// <summary>
+        /// Calling this will enable the support for private constructors when considering serialization and deserialization.
+        /// </summary>
+        public TBuilder EnablePrivateConstructors()
+        {
+            settings.AllowPrivateConstructors = true;
+            return Self;
+        }
+
+        /// <summary>
         /// Sets the <see cref="INamingConvention" /> that will be used by the (de)serializer.
         /// </summary>
         public TBuilder WithNamingConvention(INamingConvention namingConvention)
         {
-            if (namingConvention == null)
-            {
-                throw new ArgumentNullException(nameof(namingConvention));
-            }
-
-            this.namingConvention = namingConvention;
+            this.namingConvention = namingConvention ?? throw new ArgumentNullException(nameof(namingConvention));
             return Self;
         }
 
@@ -96,16 +102,11 @@ namespace YamlDotNet.Serialization
         /// </summary>
         public TBuilder WithTypeResolver(ITypeResolver typeResolver)
         {
-            if (typeResolver == null)
-            {
-                throw new ArgumentNullException(nameof(typeResolver));
-            }
-
-            this.typeResolver = typeResolver;
+            this.typeResolver = typeResolver ?? throw new ArgumentNullException(nameof(typeResolver));
             return Self;
         }
 
-        public abstract TBuilder WithTagMapping(string tag, Type type);
+        public abstract TBuilder WithTagMapping(TagName tag, Type type);
 
 #if !NET20
         /// <summary>
@@ -115,7 +116,7 @@ namespace YamlDotNet.Serialization
         /// <param name="propertyAccessor">An expression in the form: x => x.SomeProperty</param>
         /// <param name="attribute">The attribute to register.</param>
         /// <returns></returns>
-        public TBuilder WithAttributeOverride<TClass>(Expression<Func<TClass, object>> propertyAccessor, Attribute attribute)
+        public TBuilder WithAttributeOverride<TClass>(System.Linq.Expressions.Expression<Func<TClass, object>> propertyAccessor, Attribute attribute)
         {
             overrides.Add(propertyAccessor, attribute);
             return Self;
@@ -277,7 +278,7 @@ namespace YamlDotNet.Serialization
         public TBuilder WithoutTypeInspector<TTypeInspector>()
             where TTypeInspector : ITypeInspector
         {
-            return WithoutTypeInspector(typeof(ITypeInspector));
+            return WithoutTypeInspector(typeof(TTypeInspector));
         }
 
         /// <summary>

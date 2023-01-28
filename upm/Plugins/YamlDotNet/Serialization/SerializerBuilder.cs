@@ -1,26 +1,29 @@
-﻿//  This file is part of YamlDotNet - A .NET library for YAML.
-//  Copyright (c) Antoine Aubry and contributors
-
-//  Permission is hereby granted, free of charge, to any person obtaining a copy of
-//  this software and associated documentation files (the "Software"), to deal in
-//  the Software without restriction, including without limitation the rights to
-//  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-//  of the Software, and to permit persons to whom the Software is furnished to do
-//  so, subject to the following conditions:
-
-//  The above copyright notice and this permission notice shall be included in all
-//  copies or substantial portions of the Software.
-
-//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-//  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-//  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-//  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-//  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-//  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-//  SOFTWARE.
+﻿// This file is part of YamlDotNet - A .NET library for YAML.
+// Copyright (c) Antoine Aubry and contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of
+// this software and associated documentation files (the "Software"), to deal in
+// the Software without restriction, including without limitation the rights to
+// use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+// of the Software, and to permit persons to whom the Software is furnished to do
+// so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 using System;
 using System.Collections.Generic;
+#if NET7_0_OR_GREATER
+using System.Diagnostics.CodeAnalysis;
+#endif
 using YamlDotNet.Core;
 using YamlDotNet.Serialization.Converters;
 using YamlDotNet.Serialization.EventEmitters;
@@ -32,51 +35,100 @@ using YamlDotNet.Serialization.TypeResolvers;
 
 namespace YamlDotNet.Serialization
 {
+
     /// <summary>
     /// Creates and configures instances of <see cref="Serializer" />.
     /// This class is used to customize the behavior of <see cref="Serializer" />. Use the relevant methods
     /// to apply customizations, then call <see cref="Build" /> to create an instance of the serializer
     /// with the desired customizations.
     /// </summary>
+#if NET7_0_OR_GREATER
+    [RequiresDynamicCode("By default, the serializer uses reflection. Use the code generator/analyzer to generate static code and use the 'WithStaticContext' method.")]
+#endif
     public sealed class SerializerBuilder : BuilderSkeleton<SerializerBuilder>
     {
         private ObjectGraphTraversalStrategyFactory objectGraphTraversalStrategyFactory;
         private readonly LazyComponentRegistrationList<IEnumerable<IYamlTypeConverter>, IObjectGraphVisitor<Nothing>> preProcessingPhaseObjectGraphVisitorFactories;
         private readonly LazyComponentRegistrationList<EmissionPhaseObjectGraphVisitorArgs, IObjectGraphVisitor<IEmitter>> emissionPhaseObjectGraphVisitorFactories;
         private readonly LazyComponentRegistrationList<IEventEmitter, IEventEmitter> eventEmitterFactories;
-        private readonly IDictionary<Type, string> tagMappings = new Dictionary<Type, string>();
+        private readonly IDictionary<Type, TagName> tagMappings = new Dictionary<Type, TagName>();
         private int maximumRecursion = 50;
         private EmitterSettings emitterSettings = EmitterSettings.Default;
+        private DefaultValuesHandling defaultValuesHandlingConfiguration = DefaultValuesHandling.Preserve;
+        private bool quoteNecessaryStrings;
+        private ITypeInspector? _baseTypeInspector = null;
 
         public SerializerBuilder()
+            : base(new DynamicTypeResolver())
         {
             typeInspectorFactories.Add(typeof(CachedTypeInspector), inner => new CachedTypeInspector(inner));
-            typeInspectorFactories.Add(typeof(NamingConventionTypeInspector), inner => namingConvention != null ? new NamingConventionTypeInspector(inner, namingConvention) : inner);
+            typeInspectorFactories.Add(typeof(NamingConventionTypeInspector), inner => namingConvention is NullNamingConvention ? inner : new NamingConventionTypeInspector(inner, namingConvention));
             typeInspectorFactories.Add(typeof(YamlAttributesTypeInspector), inner => new YamlAttributesTypeInspector(inner));
             typeInspectorFactories.Add(typeof(YamlAttributeOverridesInspector), inner => overrides != null ? new YamlAttributeOverridesInspector(inner, overrides.Clone()) : inner);
 
-            preProcessingPhaseObjectGraphVisitorFactories = new LazyComponentRegistrationList<IEnumerable<IYamlTypeConverter>, IObjectGraphVisitor<Nothing>>();
-            preProcessingPhaseObjectGraphVisitorFactories.Add(typeof(AnchorAssigner), typeConverters => new AnchorAssigner(typeConverters));
+            preProcessingPhaseObjectGraphVisitorFactories = new LazyComponentRegistrationList<IEnumerable<IYamlTypeConverter>, IObjectGraphVisitor<Nothing>>
+            {
+                { typeof(AnchorAssigner), typeConverters => new AnchorAssigner(typeConverters) }
+            };
 
-            emissionPhaseObjectGraphVisitorFactories = new LazyComponentRegistrationList<EmissionPhaseObjectGraphVisitorArgs, IObjectGraphVisitor<IEmitter>>();
-            emissionPhaseObjectGraphVisitorFactories.Add(typeof(CustomSerializationObjectGraphVisitor),
-                args => new CustomSerializationObjectGraphVisitor(args.InnerVisitor, args.TypeConverters, args.NestedObjectSerializer));
+            emissionPhaseObjectGraphVisitorFactories = new LazyComponentRegistrationList<EmissionPhaseObjectGraphVisitorArgs, IObjectGraphVisitor<IEmitter>>
+            {
+                {
+                    typeof(CustomSerializationObjectGraphVisitor),
+                    args => new CustomSerializationObjectGraphVisitor(args.InnerVisitor, args.TypeConverters, args.NestedObjectSerializer)
+                },
+                {
+                    typeof(AnchorAssigningObjectGraphVisitor),
+                    args => new AnchorAssigningObjectGraphVisitor(args.InnerVisitor, args.EventEmitter, args.GetPreProcessingPhaseObjectGraphVisitor<AnchorAssigner>())
+                },
+                {
+                    typeof(DefaultValuesObjectGraphVisitor),
+                    args => new DefaultValuesObjectGraphVisitor(defaultValuesHandlingConfiguration, args.InnerVisitor)
+                },
+                {
+                    typeof(CommentsObjectGraphVisitor),
+                    args => new CommentsObjectGraphVisitor(args.InnerVisitor)
+                }
+            };
 
-            emissionPhaseObjectGraphVisitorFactories.Add(typeof(AnchorAssigningObjectGraphVisitor),
-                args => new AnchorAssigningObjectGraphVisitor(args.InnerVisitor, args.EventEmitter, args.GetPreProcessingPhaseObjectGraphVisitor<AnchorAssigner>()));
+            eventEmitterFactories = new LazyComponentRegistrationList<IEventEmitter, IEventEmitter>
+            {
+                { typeof(TypeAssigningEventEmitter), inner => new TypeAssigningEventEmitter(inner, false, tagMappings, quoteNecessaryStrings) }
+            };
 
-            emissionPhaseObjectGraphVisitorFactories.Add(typeof(DefaultExclusiveObjectGraphVisitor),
-                args => new DefaultExclusiveObjectGraphVisitor(args.InnerVisitor));
-
-            eventEmitterFactories = new LazyComponentRegistrationList<IEventEmitter, IEventEmitter>();
-            eventEmitterFactories.Add(typeof(TypeAssigningEventEmitter), inner => new TypeAssigningEventEmitter(inner, false, tagMappings));
-
-            objectGraphTraversalStrategyFactory = (typeInspector, typeResolver, typeConverters, maximumRecursion) => new FullObjectGraphTraversalStrategy(typeInspector, typeResolver, maximumRecursion, namingConvention ?? new NullNamingConvention());
-
-            WithTypeResolver(new DynamicTypeResolver());
+            objectGraphTraversalStrategyFactory = (typeInspector, typeResolver, typeConverters, maximumRecursion) => new FullObjectGraphTraversalStrategy(typeInspector, typeResolver, maximumRecursion, namingConvention);
         }
 
         protected override SerializerBuilder Self { get { return this; } }
+
+        /// <summary>
+        /// When using Ahead of Time compilation you need to pass in a generated Ahead of Time context. The context will contain a statically generated IObjectFactory and ITypeInspector.
+        /// This method will also remove the default dynamic, reflection based type inspectors and node deserializers.
+        /// </summary>
+        /// <param name="context"></param>
+        /// <returns></returns>
+        public SerializerBuilder WithStaticContext(StaticContext context)
+        {
+            typeInspectorFactories.Clear();
+
+            typeInspectorFactories.Add(typeof(CachedTypeInspector), inner => new CachedTypeInspector(inner));
+            typeInspectorFactories.Add(typeof(NamingConventionTypeInspector), inner => namingConvention is NullNamingConvention ? inner : new NamingConventionTypeInspector(inner, namingConvention));
+            typeInspectorFactories.Add(typeof(YamlAttributesTypeInspector), inner => new YamlAttributesTypeInspector(inner));
+            typeInspectorFactories.Add(typeof(YamlAttributeOverridesInspector), inner => overrides != null ? new YamlAttributeOverridesInspector(inner, overrides.Clone()) : inner);
+
+            _baseTypeInspector = context.GetTypeInspector();
+
+            return Self;
+        }
+
+        /// <summary>
+        /// Put double quotes around strings that need it, for example Null, True, False, a number. This should be called before any other "With" methods if you want this feature enabled.
+        /// </summary>
+        public SerializerBuilder WithQuotingNecessaryStrings()
+        {
+            quoteNecessaryStrings = true;
+            return this;
+        }
 
         /// <summary>
         /// Sets the maximum recursion that is allowed while traversing the object graph. The default value is 50.
@@ -178,11 +230,11 @@ namespace YamlDotNet.Serialization
         /// <summary>
         /// Registers a tag mapping.
         /// </summary>
-        public override SerializerBuilder WithTagMapping(string tag, Type type)
+        public override SerializerBuilder WithTagMapping(TagName tag, Type type)
         {
-            if (tag == null)
+            if (tag.IsEmpty)
             {
-                throw new ArgumentNullException(nameof(tag));
+                throw new ArgumentException("Non-specific tags cannot be maped");
             }
 
             if (type == null)
@@ -190,10 +242,9 @@ namespace YamlDotNet.Serialization
                 throw new ArgumentNullException(nameof(type));
             }
 
-            string alreadyRegisteredTag;
-            if (tagMappings.TryGetValue(type, out alreadyRegisteredTag))
+            if (tagMappings.TryGetValue(type, out var alreadyRegisteredTag))
             {
-                throw new ArgumentException(string.Format("Type already has a registered tag '{0}' for type '{1}'", alreadyRegisteredTag, type.FullName), nameof(type));
+                throw new ArgumentException($"Type already has a registered tag '{alreadyRegisteredTag}' for type '{type.FullName}'", nameof(type));
             }
 
             tagMappings.Add(type, tag);
@@ -212,7 +263,7 @@ namespace YamlDotNet.Serialization
 
             if (!tagMappings.Remove(type))
             {
-                throw new KeyNotFoundException(string.Format("Tag for type '{0}' is not registered", type.FullName));
+                throw new KeyNotFoundException($"Tag for type '{type.FullName}' is not registered");
             }
             return this;
         }
@@ -227,9 +278,11 @@ namespace YamlDotNet.Serialization
                 typeConverters,
                 typeInspector,
                 typeResolver,
-                maximumRecursion
+                maximumRecursion,
+                namingConvention,
+                settings
             );
-            WithEventEmitter(inner => new TypeAssigningEventEmitter(inner, true, tagMappings), loc => loc.InsteadOf<TypeAssigningEventEmitter>());
+            WithEventEmitter(inner => new TypeAssigningEventEmitter(inner, true, tagMappings, quoteNecessaryStrings), loc => loc.InsteadOf<TypeAssigningEventEmitter>());
             return WithTypeInspector(inner => new ReadableAndWritablePropertiesTypeInspector(inner), loc => loc.OnBottom());
         }
 
@@ -253,9 +306,20 @@ namespace YamlDotNet.Serialization
         /// <summary>
         /// Forces every value to be serialized, even if it is the default value for that type.
         /// </summary>
-        public SerializerBuilder EmitDefaults()
+        [Obsolete("The default behavior is now to always emit default values, thefore calling this method has no effect. This behavior is now controlled by ConfigureDefaultValuesHandling.", error: true)]
+        public SerializerBuilder EmitDefaults() => ConfigureDefaultValuesHandling(DefaultValuesHandling.Preserve);
+
+        /// <summary>
+        /// Configures how properties with default and null values should be handled. The default value is DefaultValuesHandling.Preserve
+        /// </summary>
+        /// <remarks>
+        /// If more control is needed, create a class that extends from ChainedObjectGraphVisitor and override its EnterMapping methods.
+        /// Then register it as follows: 
+        /// WithEmissionPhaseObjectGraphVisitor(args => new MyDefaultHandlingStrategy(args.InnerVisitor));
+        /// </remarks>
+        public SerializerBuilder ConfigureDefaultValuesHandling(DefaultValuesHandling configuration)
         {
-            emissionPhaseObjectGraphVisitorFactories.Remove(typeof(DefaultExclusiveObjectGraphVisitor));
+            this.defaultValuesHandlingConfiguration = configuration;
             return this;
         }
 
@@ -264,11 +328,23 @@ namespace YamlDotNet.Serialization
         /// </summary>
         public SerializerBuilder JsonCompatible()
         {
-            this.emitterSettings = this.emitterSettings.WithMaxSimpleKeyLength(int.MaxValue);
+            this.emitterSettings = this.emitterSettings
+                                       .WithMaxSimpleKeyLength(int.MaxValue)
+                                       .WithoutAnchorName();
 
             return this
                 .WithTypeConverter(new GuidConverter(true), w => w.InsteadOf<GuidConverter>())
                 .WithEventEmitter(inner => new JsonEventEmitter(inner), loc => loc.InsteadOf<TypeAssigningEventEmitter>());
+        }
+
+        /// <summary>
+        /// Allows you to override the new line character to use when serializing to YAML.
+        /// </summary>
+        /// <param name="newLine">NewLine character(s) to use when serializing to YAML.</param>
+        public SerializerBuilder WithNewLine(string newLine)
+        {
+            this.emitterSettings = this.emitterSettings.WithNewLine(newLine);
+            return this;
         }
 
         /// <summary>
@@ -471,6 +547,22 @@ namespace YamlDotNet.Serialization
         }
 
         /// <summary>
+        /// Creates sequences with extra indentation
+        /// </summary>
+        /// <example>
+        ///  list:
+        ///    - item
+        ///    - item
+        /// </example>
+        /// <returns></returns>
+        public SerializerBuilder WithIndentedSequences()
+        {
+            emitterSettings = emitterSettings.WithIndentedSequences();
+
+            return this;
+        }
+
+        /// <summary>
         /// Creates a new <see cref="Serializer" /> according to the current configuration.
         /// </summary>
         public ISerializer Build()
@@ -499,6 +591,29 @@ namespace YamlDotNet.Serialization
             );
         }
 
+        internal ITypeInspector BuildTypeInspector()
+        {
+            ITypeInspector innerInspector;
+
+            if (this._baseTypeInspector != null)
+            {
+                innerInspector = this._baseTypeInspector;
+            }
+            else
+            {
+                innerInspector = new ReadablePropertiesTypeInspector(typeResolver, includeNonPublicProperties);
+                if (!ignoreFields)
+                {
+                    innerInspector = new CompositeTypeInspector(
+                        new ReadableFieldsTypeInspector(typeResolver),
+                        innerInspector
+                    );
+                }
+            }
+
+            return typeInspectorFactories.BuildComponentChain(innerInspector);
+        }
+
         private class ValueSerializer : IValueSerializer
         {
             private readonly IObjectGraphTraversalStrategy traversalStrategy;
@@ -522,9 +637,9 @@ namespace YamlDotNet.Serialization
                 this.emissionPhaseObjectGraphVisitorFactories = emissionPhaseObjectGraphVisitorFactories;
             }
 
-            public void SerializeValue(IEmitter emitter, object value, Type type)
+            public void SerializeValue(IEmitter emitter, object? value, Type? type)
             {
-                var actualType = type != null ? type : value != null ? value.GetType() : typeof(object);
+                var actualType = type ?? (value != null ? value.GetType() : typeof(object));
                 var staticType = type ?? typeof(object);
 
                 var graph = new ObjectDescriptor(value, actualType, staticType);
@@ -532,14 +647,14 @@ namespace YamlDotNet.Serialization
                 var preProcessingPhaseObjectGraphVisitors = preProcessingPhaseObjectGraphVisitorFactories.BuildComponentList(typeConverters);
                 foreach (var visitor in preProcessingPhaseObjectGraphVisitors)
                 {
-                    traversalStrategy.Traverse(graph, visitor, null);
+                    traversalStrategy.Traverse(graph, visitor, default);
                 }
 
-                ObjectSerializer nestedObjectSerializer = (v, t) => SerializeValue(emitter, v, t);
+                void NestedObjectSerializer(object? v, Type? t) => SerializeValue(emitter, v, t);
 
                 var emittingVisitor = emissionPhaseObjectGraphVisitorFactories.BuildComponentChain(
                     new EmittingObjectGraphVisitor(eventEmitter),
-                    inner => new EmissionPhaseObjectGraphVisitorArgs(inner, eventEmitter, preProcessingPhaseObjectGraphVisitors, typeConverters, nestedObjectSerializer)
+                    inner => new EmissionPhaseObjectGraphVisitorArgs(inner, eventEmitter, preProcessingPhaseObjectGraphVisitors, typeConverters, NestedObjectSerializer)
                 );
 
                 traversalStrategy.Traverse(graph, emittingVisitor, emitter);

@@ -1,4 +1,4 @@
-namespace YamlDotNet.Samples.Helpers
+﻿namespace Xunit.Abstractions
 {
     public interface ITestOutputHelper {
         void WriteLine();
