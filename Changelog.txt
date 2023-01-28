@@ -2,4 +2,4 @@
 
 
 09.02.2021:
- Updated to v11.1.1 - https://github.com/aaubry/YamlDotNet/releases/tag/v11.1.1
+ Updated to v6.1.2 (it seems at least, b/c this changelog is done in retrospect, and the code is missing some changes from v7.0.0, so it should be the one before) - https://github.com/aaubry/YamlDotNet/releases/tag/v6.1.2
